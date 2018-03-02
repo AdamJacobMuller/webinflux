@@ -126,10 +126,10 @@ func (m *Middleware) send() error {
 			"m5":       item.Timer.Rate5(),
 			"m15":      item.Timer.Rate15(),
 			"meanrate": item.Timer.RateMean(),
-			"requests": item.Requests,
+			"requests": int(item.Requests),
 		}
 		for code, count := range item.StatusCodes {
-			fields[fmt.Sprintf("status.%d", code)] = count
+			fields[fmt.Sprintf("status.%d", code)] = int(count)
 		}
 		point, err := client.NewPoint(m.name, tags, fields, now)
 		if err != nil {
