@@ -82,6 +82,8 @@ type Middleware struct {
 	itemsLock sync.RWMutex
 	interval  time.Duration
 
+	urlMetricList map[string]bool
+
 	influxdb          client.Client
 	name              string
 	influxdb_url      string
@@ -89,6 +91,15 @@ type Middleware struct {
 	influxdb_username string
 	influxdb_password string
 	influxdb_tags     map[string]string
+}
+
+func (m *Middleware) urlMetrics(routePath string) bool {
+	v, ok := m.urlMetricList[routePath]
+	if ok {
+		return v
+	}
+
+	return false
 }
 
 func (m *Middleware) send() error {
@@ -268,7 +279,7 @@ func (m *Middleware) getItem(name string) *item {
 	return nameItem
 }
 
-func NewWebInflux(name, influxdb_url, influxdb_database, influxdb_username, influxdb_password string, influxdb_tags map[string]string) (*Middleware, error) {
+func NewWebInflux(name, influxdb_url, influxdb_database, influxdb_username, influxdb_password string, influxdb_tags map[string]string, urlMetricList map[string]bool) (*Middleware, error) {
 	_, err := url.Parse(influxdb_url)
 	if err != nil {
 		log.WithFields(log.Fields{
@@ -280,6 +291,7 @@ func NewWebInflux(name, influxdb_url, influxdb_database, influxdb_username, infl
 
 	m := Middleware{
 		items:             make(map[string]*item),
+		urlMetricList:     urlMetricList,
 		interval:          time.Second * 10,
 		name:              name,
 		influxdb_url:      influxdb_url,
@@ -306,7 +318,7 @@ func (m *Middleware) ServeHTTP(rw web.ResponseWriter, req *web.Request, next web
 	go func(rw web.ResponseWriter, req *web.Request, closeChan <-chan bool) {
 		var lastBytes int
 		var bytes int
-		var path string
+		var routePath string
 
 		ticker := time.Tick(time.Millisecond)
 	outerLoop:
@@ -314,7 +326,7 @@ func (m *Middleware) ServeHTTP(rw web.ResponseWriter, req *web.Request, next web
 			select {
 			case <-ticker:
 				if req.IsRouted() {
-					path = req.RoutePath()
+					routePath = req.RoutePath()
 					break outerLoop
 				}
 			case <-closeChan:
@@ -322,7 +334,13 @@ func (m *Middleware) ServeHTTP(rw web.ResponseWriter, req *web.Request, next web
 			}
 		}
 
-		requestItem := m.getItem(path)
+		requestItem := m.getItem(routePath)
+
+		var urlItem *item
+
+		if m.urlMetrics(routePath) {
+			urlItem = m.getItem(req.URL.Path)
+		}
 
 		ticker = time.Tick(time.Second)
 		for {
@@ -330,10 +348,16 @@ func (m *Middleware) ServeHTTP(rw web.ResponseWriter, req *web.Request, next web
 			case <-ticker:
 				bytes = rw.Size()
 				requestItem.countBytes(bytes - lastBytes)
+				if urlItem != nil {
+					urlItem.countBytes(bytes - lastBytes)
+				}
 				lastBytes = bytes
 			case <-closeChan:
 				bytes = rw.Size()
 				requestItem.countBytes(bytes - lastBytes)
+				if urlItem != nil {
+					urlItem.countBytes(bytes - lastBytes)
+				}
 				return
 			}
 		}
@@ -346,6 +370,10 @@ func (m *Middleware) ServeHTTP(rw web.ResponseWriter, req *web.Request, next web
 	close(closeChan)
 	took := time.Since(start)
 
-	path := req.RoutePath()
-	m.getItem(path).addRequest(rw.StatusCode(), took)
+	routePath := req.RoutePath()
+	m.getItem(routePath).addRequest(rw.StatusCode(), took)
+
+	if m.urlMetrics(routePath) {
+		m.getItem(req.URL.Path).addRequest(rw.StatusCode(), took)
+	}
 }
