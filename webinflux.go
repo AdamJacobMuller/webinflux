@@ -16,6 +16,7 @@ import (
 type Item struct {
 	Name        string
 	Requests    uint64
+	Bytes       uint64
 	StatusCodes map[int]uint64
 	Timer       metrics.Timer
 }
@@ -23,6 +24,7 @@ type Item struct {
 type item struct {
 	name           string
 	requests       uint64
+	bytes          uint64
 	statusCodes    map[int]*uint64
 	timer          metrics.Timer
 	statusCodeLock sync.RWMutex
@@ -34,6 +36,7 @@ func (i *item) snapshot() Item {
 		StatusCodes: make(map[int]uint64),
 		Timer:       i.timer.Snapshot(),
 	}
+	newItem.Bytes = atomic.SwapUint64(&i.bytes, 0)
 	newItem.Requests = atomic.SwapUint64(&i.requests, 0)
 	i.statusCodeLock.RLock()
 	for sc, v := range i.statusCodes {
@@ -41,6 +44,10 @@ func (i *item) snapshot() Item {
 	}
 	i.statusCodeLock.RUnlock()
 	return newItem
+}
+
+func (i *item) countBytes(bytes int) {
+	atomic.AddUint64(&i.bytes, uint64(bytes))
 }
 
 func (i *item) addRequest(code int, took time.Duration) {
@@ -127,6 +134,7 @@ func (m *Middleware) send() error {
 			"m15":      item.Timer.Rate15(),
 			"meanrate": item.Timer.RateMean(),
 			"requests": int(item.Requests),
+			"bytes":    int(item.Bytes),
 		}
 		for code, count := range item.StatusCodes {
 			fields[fmt.Sprintf("status.%d", code)] = int(count)
@@ -292,11 +300,52 @@ func NewWebInflux(name, influxdb_url, influxdb_database, influxdb_username, infl
 }
 
 func (m *Middleware) ServeHTTP(rw web.ResponseWriter, req *web.Request, next web.NextMiddlewareFunc) {
+
+	closeChan := make(chan bool)
+
+	go func(rw web.ResponseWriter, req *web.Request, closeChan <-chan bool) {
+		var lastBytes int
+		var bytes int
+		var path string
+
+		ticker := time.Tick(time.Millisecond)
+	outerLoop:
+		for {
+			select {
+			case <-ticker:
+				if req.IsRouted() {
+					path = req.RoutePath()
+					break outerLoop
+				}
+			case <-closeChan:
+				break outerLoop
+			}
+		}
+
+		requestItem := m.getItem(path)
+
+		ticker = time.Tick(time.Second)
+		for {
+			select {
+			case <-ticker:
+				bytes = rw.Size()
+				requestItem.countBytes(bytes - lastBytes)
+				lastBytes = bytes
+			case <-closeChan:
+				bytes = rw.Size()
+				requestItem.countBytes(bytes - lastBytes)
+				return
+			}
+		}
+	}(rw, req, closeChan)
+
 	start := time.Now()
 	next(rw, req)
+
+	closeChan <- true
+	close(closeChan)
 	took := time.Since(start)
 
-	route := req.RoutePath()
-
-	m.getItem(route).addRequest(rw.StatusCode(), took)
+	path := req.RoutePath()
+	m.getItem(path).addRequest(rw.StatusCode(), took)
 }
