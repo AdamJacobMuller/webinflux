@@ -15,6 +15,7 @@ import (
 
 type Item struct {
 	Name        string
+	ItemType    string
 	Requests    uint64
 	Bytes       uint64
 	StatusCodes map[int]uint64
@@ -23,6 +24,7 @@ type Item struct {
 
 type item struct {
 	name           string
+	itemType       string
 	requests       uint64
 	bytes          uint64
 	statusCodes    map[int]*uint64
@@ -33,6 +35,7 @@ type item struct {
 func (i *item) snapshot() Item {
 	newItem := Item{
 		Name:        i.name,
+		ItemType:    i.itemType,
 		StatusCodes: make(map[int]uint64),
 		Timer:       i.timer.Snapshot(),
 	}
@@ -125,7 +128,13 @@ func (m *Middleware) send() error {
 		for k, v := range m.influxdb_tags {
 			tags[k] = v
 		}
-		tags["route"] = item.Name
+		if item.ItemType == "url" {
+			tags["url"] = item.Name
+		} else if item.ItemType == "route" {
+			tags["route"] = item.Name
+		}
+		tags["name"] = item.Name
+		tags["type"] = item.ItemType
 		ps := item.Timer.Percentiles([]float64{0.5, 0.75, 0.95, 0.99, 0.999, 0.9999})
 		fields := map[string]interface{}{
 			"count":    item.Timer.Count(),
@@ -253,28 +262,32 @@ func (m *Middleware) Snapshot() []Item {
 	return items
 }
 
-func (m *Middleware) getItem(name string) *item {
+func (m *Middleware) getItem(name string, itemType string) *item {
 	var nameItem *item
 	var ok bool
+
+	key := fmt.Sprintf("%s:%s", itemType, name)
+
 	m.itemsLock.RLock()
-	nameItem, ok = m.items[name]
+	nameItem, ok = m.items[key]
 	if ok {
 		m.itemsLock.RUnlock()
 		return nameItem
 	}
 	m.itemsLock.RUnlock()
 	m.itemsLock.Lock()
-	nameItem, ok = m.items[name]
+	nameItem, ok = m.items[key]
 	if ok {
 		m.itemsLock.Unlock()
 		return nameItem
 	}
 	nameItem = &item{
 		name:        name,
+		itemType:    itemType,
 		statusCodes: make(map[int]*uint64),
 		timer:       metrics.NewTimer(),
 	}
-	m.items[name] = nameItem
+	m.items[key] = nameItem
 	m.itemsLock.Unlock()
 	return nameItem
 }
@@ -334,12 +347,12 @@ func (m *Middleware) ServeHTTP(rw web.ResponseWriter, req *web.Request, next web
 			}
 		}
 
-		requestItem := m.getItem(routePath)
+		requestItem := m.getItem(routePath, "route")
 
 		var urlItem *item
 
 		if m.urlMetrics(routePath) {
-			urlItem = m.getItem(req.URL.Path)
+			urlItem = m.getItem(req.URL.Path, "url")
 		}
 
 		ticker = time.Tick(time.Second)
@@ -371,9 +384,9 @@ func (m *Middleware) ServeHTTP(rw web.ResponseWriter, req *web.Request, next web
 	took := time.Since(start)
 
 	routePath := req.RoutePath()
-	m.getItem(routePath).addRequest(rw.StatusCode(), took)
+	m.getItem(routePath, "route").addRequest(rw.StatusCode(), took)
 
 	if m.urlMetrics(routePath) {
-		m.getItem(req.URL.Path).addRequest(rw.StatusCode(), took)
+		m.getItem(req.URL.Path, "url").addRequest(rw.StatusCode(), took)
 	}
 }
