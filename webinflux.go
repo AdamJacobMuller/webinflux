@@ -180,6 +180,7 @@ func (m *Middleware) send() error {
 
 func (m *Middleware) run() {
 	var err error
+
 	intervalTicker := time.Tick(m.interval)
 	pingTicker := time.Tick(time.Second * 5)
 	for {
@@ -312,11 +313,6 @@ func NewWebInflux(name, influxdb_url, influxdb_database, influxdb_username, infl
 		influxdb_username: influxdb_username,
 		influxdb_password: influxdb_password,
 		influxdb_tags:     influxdb_tags,
-	}
-
-	err = m.connect()
-	if err != nil {
-		return nil, err
 	}
 
 	go m.run()
