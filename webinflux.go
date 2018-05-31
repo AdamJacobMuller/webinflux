@@ -181,6 +181,16 @@ func (m *Middleware) send() error {
 func (m *Middleware) run() {
 	var err error
 
+	err = m.connect()
+	if err != nil {
+		log.WithFields(log.Fields{
+			"error":    err,
+			"url":      m.influxdb_url,
+			"username": m.influxdb_username,
+		}).Error("unable to create InfluxDB client")
+		return
+	}
+
 	intervalTicker := time.Tick(m.interval)
 	pingTicker := time.Tick(time.Second * 5)
 	for {
